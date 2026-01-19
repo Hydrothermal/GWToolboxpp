@@ -224,17 +224,20 @@ namespace {
         return "42" + msg.dump();
     }
 
-    void ParseSocketIOMessage(const std::string& message, std::string& event, json& data)
+    bool ParseSocketIOMessage(const std::string& message, std::string& event, json& data)
     {
-        if (message.length() < 2 || message.substr(0, 2) != "42") return;
+        if (message.length() < 2 || message.substr(0, 2) != "42") 
+            return false;
 
-        json parsed = json::parse(message.substr(2));
-        if (parsed.is_array() && parsed.size() >= 1) {
+        json parsed = json::parse(message.substr(2),nullptr,false);
+        if (!parsed.is_discarded() && parsed.is_array() && parsed.size() >= 1) {
             event = parsed[0].get<std::string>();
             if (parsed.size() >= 2) {
                 data = parsed[1];
+                return true;
             }
         }
+        return true;
     }
 
     void OnGetAvailableOrders(const json& orders)
@@ -244,11 +247,11 @@ namespace {
         for (auto it = orders.begin(); it != orders.end(); ++it) {
             AvailableItem item;
             item.name = InternString(it.key());
-            if (it.value().contains("sellOrders")) {
-                item.sellOrders += it.value()["sellOrders"].get<int>();
+            if (it.value().contains("sellWeek")) {
+                item.sellOrders += it.value()["sellWeek"].get<int>();
             }
-            if (it.value().contains("buyOrders")) {
-                item.buyOrders += it.value()["buyOrders"].get<int>();
+            if (it.value().contains("buyWeek")) {
+                item.buyOrders += it.value()["buyWeek"].get<int>();
             }
             available_items.push_back(item);
         }
@@ -345,7 +348,7 @@ namespace {
                     else if (message[1] == '2') {
                         std::string event;
                         json data;
-                        ParseSocketIOMessage(message, event, data);
+                        if (!ParseSocketIOMessage(message, event, data)) break;
 
                         if (event == "GetAvailableOrders")
                             OnGetAvailableOrders(data);
@@ -356,6 +359,19 @@ namespace {
                     }
                 }
                 break;
+            default: {
+                if (message.starts_with("#042")) {
+                    std::string event;
+                    json data;
+                    if (!ParseSocketIOMessage(&message[2], event, data)) break;
+                    if (event == "GetAvailableOrders")
+                        OnGetAvailableOrders(data);
+                    else if (event == "GetLastItems")
+                        OnGetLastItems(data);
+                    else if (event == "GetItemOrders")
+                        OnGetItemOrders(data);
+                }
+            } break;
         }
     }
 
@@ -642,6 +658,8 @@ void GWMarketWindow::Terminate()
     if (worker && worker->joinable()) worker->join();
     delete worker;
     DeleteWebSocket(ws);
+    ws = nullptr;
+    ws_connecting = socket_io_ready = false;
     ToolboxWindow::Terminate();
 }
 
@@ -665,9 +683,7 @@ void GWMarketWindow::Update(float delta)
             socket_io_ready = false;
         }
     }
-    else if (!ws_connecting) {
-        ConnectWebSocket();
-    }
+    ConnectWebSocket();
 
     if (auto_refresh && socket_io_ready) {
         refresh_timer += delta;
